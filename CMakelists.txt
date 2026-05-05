@@ -1,0 +1,96 @@
+cmake_minimum_required(VERSION 3.16)
+project(neon_gui CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(IMGUI_DIR  "${CMAKE_SOURCE_DIR}/imgui")
+set(IMPLOT_DIR "${CMAKE_SOURCE_DIR}/implot")
+
+set(IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+)
+
+set(IMPLOT_SOURCES
+    ${IMPLOT_DIR}/implot.cpp
+    ${IMPLOT_DIR}/implot_items.cpp
+    ${IMPLOT_DIR}/implot_demo.cpp
+)
+
+if(ANDROID)
+    set(NEON_GUI_PLATFORM "android")
+elseif(WIN32)
+    set(NEON_GUI_PLATFORM "windows")
+else()
+    set(NEON_GUI_PLATFORM "linux")
+endif()
+
+message(STATUS "neon_gui platform: ${NEON_GUI_PLATFORM}")
+
+if(NEON_GUI_PLATFORM STREQUAL "android")
+    set(BACKEND_SOURCES
+        ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+    set(BACKEND_DEFINES NEON_GUI_SDL2)
+else()
+    set(BACKEND_SOURCES
+        ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+    set(BACKEND_DEFINES "")
+endif()
+
+add_executable(neon_gui
+    neon_gui.cpp
+    ${IMGUI_SOURCES}
+    ${IMPLOT_SOURCES}
+    ${BACKEND_SOURCES}
+)
+
+target_include_directories(neon_gui PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${IMGUI_DIR}
+    ${IMPLOT_DIR}
+)
+
+target_compile_definitions(neon_gui PRIVATE ${BACKEND_DEFINES})
+
+if(MSVC)
+    target_compile_options(neon_gui PRIVATE /O2 /arch:AVX2)
+else()
+    target_compile_options(neon_gui PRIVATE -O2)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm)")
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+            target_compile_options(neon_gui PRIVATE -march=armv8-a)
+        else()
+            target_compile_options(neon_gui PRIVATE -mfpu=neon -mfloat-abi=hard)
+        endif()
+    endif()
+endif()
+
+if(NEON_GUI_PLATFORM STREQUAL "android")
+    find_package(SDL2 REQUIRED)
+    target_link_libraries(neon_gui PRIVATE SDL2::SDL2 GLESv2 EGL log android)
+
+elseif(NEON_GUI_PLATFORM STREQUAL "windows")
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3  REQUIRED)
+    target_link_libraries(neon_gui PRIVATE glfw OpenGL::GL)
+
+else()
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3  REQUIRED)
+    target_link_libraries(neon_gui PRIVATE glfw OpenGL::GL pthread dl)
+endif()
+
+message(STATUS "==============================================")
+message(STATUS "  Target      : neon_gui")
+message(STATUS "  Platform    : ${NEON_GUI_PLATFORM}")
+message(STATUS "  Processor   : ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "  C++ std     : C++${CMAKE_CXX_STANDARD}")
+message(STATUS "==============================================")
