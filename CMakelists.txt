@@ -4,8 +4,9 @@ project(neon_gui CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(IMGUI_DIR  "${CMAKE_SOURCE_DIR}/imgui")
-set(IMPLOT_DIR "${CMAKE_SOURCE_DIR}/implot")
+# ИСПРАВЛЕНО: пути к external папке
+set(IMGUI_DIR  "${CMAKE_SOURCE_DIR}/external/imgui")
+set(IMPLOT_DIR "${CMAKE_SOURCE_DIR}/external/implot")
 
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
@@ -56,6 +57,8 @@ target_include_directories(neon_gui PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${IMGUI_DIR}
     ${IMPLOT_DIR}
+    # Добавьте папку backends для include
+    ${IMGUI_DIR}/backends
 )
 
 target_compile_definitions(neon_gui PRIVATE ${BACKEND_DEFINES})
@@ -79,12 +82,12 @@ if(NEON_GUI_PLATFORM STREQUAL "android")
 
 elseif(NEON_GUI_PLATFORM STREQUAL "windows")
     find_package(OpenGL REQUIRED)
-    find_package(glfw3  REQUIRED)
+    find_package(glfw3 REQUIRED)
     target_link_libraries(neon_gui PRIVATE glfw OpenGL::GL)
 
 else()
     find_package(OpenGL REQUIRED)
-    find_package(glfw3  REQUIRED)
+    find_package(glfw3 REQUIRED)
     target_link_libraries(neon_gui PRIVATE glfw OpenGL::GL pthread dl)
 endif()
 

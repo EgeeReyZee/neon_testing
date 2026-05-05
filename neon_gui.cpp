@@ -16,13 +16,14 @@
 #include <iomanip>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
-#include "imgui/imgui.h"
-#include "implot/implot.h"
+#include "imgui.h"
+#include "implot.h"
 
 #if defined(NEON_GUI_SDL2)
-#  include "imgui/backends/imgui_impl_sdl2.h"
-#  include "imgui/backends/imgui_impl_opengl3.h"
+#  include "backends/imgui_impl_sdl2.h"
+#  include "backends/imgui_impl_opengl3.h"
 #  include <SDL.h>
 #  if defined(__ANDROID__)
 #    include <GLES2/gl2.h>
@@ -31,8 +32,8 @@
 #    include <SDL_opengl.h>
 #  endif
 #else
-#  include "imgui/backends/imgui_impl_glfw.h"
-#  include "imgui/backends/imgui_impl_opengl3.h"
+#  include "backends/imgui_impl_glfw.h"
+#  include "backends/imgui_impl_opengl3.h"
 #  include <GLFW/glfw3.h>
 #endif
 
@@ -186,31 +187,45 @@ struct BenchRow {
 template<typename Fn>
 static double bench_ms(Fn fn, int iters)
 {
-    volatile auto r = fn();
+    volatile i64 dummy = 0;
+    dummy = fn();
     auto t0 = Clock::now();
-    for (int i = 0; i < iters; ++i) r = fn();
+    for (int i = 0; i < iters; ++i) {
+        dummy += fn();
+    }
     auto t1 = Clock::now();
-    (void)r;
+    (void)dummy;
     return std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
 }
 
-static std::vector<BenchRow> run_benchmark(int iters)
+static std::vector<BenchRow> run_benchmark(int runs_per_size)
 {
     std::mt19937 rng(42);
     std::uniform_int_distribution<i32> dist(-1000, 1000);
 
+    std::vector<size_t> sizes = {10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000, 2000000000};
     std::vector<BenchRow> rows;
-    for (size_t N : {1000u, 10000u, 100000u, 1000000u}) {
-        std::vector<i32> buf(N);
-        for (auto& x : buf) x = dist(rng);
-        for (size_t k = 0; k < N/5; ++k) buf[rng() % N] = 0;
-        const i32* data = buf.data();
-
+    
+    for (size_t N : sizes) {
+        double sum_scalar = 0, sum_neon = 0, sum_unrolled = 0;
+        
+        for (int run = 0; run < runs_per_size; ++run) {
+            std::vector<i32> buf(N);
+            for (auto& x : buf) x = dist(rng);
+            for (size_t k = 0; k < N/5; ++k)
+                buf[rng() % N] = 0;
+            const i32* data = buf.data();
+            
+            sum_scalar  += bench_ms([&]{ return process_array_scalar(data, N); }, 10);
+            sum_neon    += bench_ms([&]{ return process_array_neon(data, N); }, 10);
+            sum_unrolled+= bench_ms([&]{ return process_array_neon_unrolled(data, N); }, 10);
+        }
+        
         BenchRow row;
         row.N          = N;
-        row.ms_scalar  = bench_ms([&]{ return process_array_scalar  (data,N); }, iters);
-        row.ms_neon    = bench_ms([&]{ return process_array_neon    (data,N); }, iters);
-        row.ms_unrolled= bench_ms([&]{ return process_array_neon_unrolled(data,N); }, iters);
+        row.ms_scalar  = sum_scalar / runs_per_size;
+        row.ms_neon    = sum_neon / runs_per_size;
+        row.ms_unrolled= sum_unrolled / runs_per_size;
         row.speedup_neon    = row.ms_scalar / row.ms_neon;
         row.speedup_unrolled= row.ms_scalar / row.ms_unrolled;
         rows.push_back(row);
@@ -225,7 +240,7 @@ struct AppState {
     std::vector<BenchRow>   bench_rows;
     bool  bench_running  = false;
     bool  bench_done     = false;
-    int   bench_iters    = 50;
+    int   bench_runs     = 10;
     std::thread bench_thread;
     std::mutex  bench_mtx;
 
@@ -257,9 +272,10 @@ struct AppState {
 
 static std::string fmt_n(size_t n) {
     std::ostringstream ss;
-    if      (n >= 1000000) ss << (n/1000000) << "M";
-    else if (n >= 1000)    ss << (n/1000) << "K";
-    else                   ss << n;
+    if      (n >= 1000000000) ss << (n/1000000000) << "B";
+    else if (n >= 1000000)    ss << (n/1000000) << "M";
+    else if (n >= 1000)       ss << (n/1000) << "K";
+    else                      ss << n;
     return ss.str();
 }
 
@@ -443,15 +459,15 @@ static void draw_custom_panel(float dpi, AppState& app)
 static void draw_bench_control_panel(float dpi, AppState& app)
 {
     ImGui::SetNextWindowPos (ImVec2(670*dpi, 320*dpi), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360*dpi, 240*dpi), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360*dpi,240*dpi), ImGuiCond_FirstUseEver);
     ImGui::Begin("Benchmark Control", nullptr);
 
     ImGui::TextColored(ImVec4(0.20f,0.85f,0.90f,1.f), "Performance Benchmark");
     ImGui::Separator(); ImGui::Spacing();
 
     ImGui::SetNextItemWidth(160*dpi);
-    ImGui::InputInt("Iterations", &app.bench_iters);
-    app.bench_iters = std::max(1, std::min(app.bench_iters, 1000));
+    ImGui::InputInt("Runs per size", &app.bench_runs);
+    app.bench_runs = std::max(1, std::min(app.bench_runs, 50));
 
     ImGui::Spacing();
 
@@ -459,9 +475,9 @@ static void draw_bench_control_panel(float dpi, AppState& app)
         if (ImGui::Button("  Run Benchmark  ", ImVec2(-1, 0))) {
             app.bench_running = true;
             app.bench_done    = false;
-            int iters = app.bench_iters;
-            app.bench_thread = std::thread([&app, iters](){
-                auto rows = run_benchmark(iters);
+            int runs = app.bench_runs;
+            app.bench_thread = std::thread([&app, runs](){
+                auto rows = run_benchmark(runs);
                 {
                     std::lock_guard<std::mutex> lk(app.bench_mtx);
                     app.bench_rows = std::move(rows);
@@ -485,10 +501,8 @@ static void draw_bench_control_panel(float dpi, AppState& app)
         std::lock_guard<std::mutex> lk(app.bench_mtx);
         for (auto& r : app.bench_rows) {
             double best_speedup = std::max(r.speedup_neon, r.speedup_unrolled);
-            ImVec4 col = (best_speedup > 1.5)
-                ? ImVec4(0.2f,1.0f,0.4f,1.f) : ImVec4(1.0f,0.8f,0.2f,1.f);
-            ImGui::TextColored(col, "  N=%-7s  best x%.2f",
-                fmt_n(r.N).c_str(), best_speedup);
+            ImVec4 col = (best_speedup > 1.5) ? ImVec4(0.2f,1.0f,0.4f,1.f) : ImVec4(1.0f,0.8f,0.2f,1.f);
+            ImGui::TextColored(col, "  N=%-7s  best x%.2f", fmt_n(r.N).c_str(), best_speedup);
         }
     }
 
@@ -562,18 +576,12 @@ static void draw_plots(float dpi, AppState& app)
         ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest);
 
-        ImPlot::SetNextLineStyle(ImVec4(0.7f,0.7f,0.7f,1.f), 2.0f);
         ImPlot::PlotLine("Scalar",   xs, app.plot_scalar.data(),   n);
-        ImPlot::SetNextLineStyle(ImVec4(0.2f,0.85f,0.9f,1.f), 2.0f);
         ImPlot::PlotLine("NEON",     xs, app.plot_neon.data(),     n);
-        ImPlot::SetNextLineStyle(ImVec4(0.8f,0.4f,1.0f,1.f), 2.0f);
         ImPlot::PlotLine("Unrolled", xs, app.plot_unrolled.data(), n);
 
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 5.f);
         ImPlot::PlotScatter("##sm", xs, app.plot_scalar.data(), n);
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 5.f);
         ImPlot::PlotScatter("##nm", xs, app.plot_neon.data(), n);
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Diamond, 5.f);
         ImPlot::PlotScatter("##um", xs, app.plot_unrolled.data(), n);
 
         ImPlot::EndPlot();
@@ -590,18 +598,12 @@ static void draw_plots(float dpi, AppState& app)
         ImPlot::SetupLegend(ImPlotLocation_NorthWest);
 
         {
-            double one_xs[2] = { app.plot_N.front(), app.plot_N.back() };
-            double one_ys[2] = { 1.0, 1.0 };
-            ImPlot::SetNextLineStyle(ImVec4(0.5f,0.5f,0.5f,0.5f), 1.0f);
-            ImPlot::PlotLine("Baseline x1", one_xs, one_ys, 2);
+            std::vector<double> baseline_xs = {app.plot_N.front(), app.plot_N.back()};
+            std::vector<double> baseline_ys = {1.0, 1.0};
+            ImPlot::PlotLine("Baseline x1", baseline_xs.data(), baseline_ys.data(), 2);
         }
 
-        ImPlot::SetNextLineStyle(ImVec4(0.2f,0.85f,0.9f,1.f), 2.0f);
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 5.f);
         ImPlot::PlotLine("NEON",     xs, app.plot_speedup_neon.data(),     n);
-
-        ImPlot::SetNextLineStyle(ImVec4(0.8f,0.4f,1.0f,1.f), 2.0f);
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Diamond, 5.f);
         ImPlot::PlotLine("Unrolled", xs, app.plot_speedup_unrolled.data(), n);
 
         ImPlot::EndPlot();
@@ -611,33 +613,23 @@ static void draw_plots(float dpi, AppState& app)
     {
         auto& last = app.bench_rows.back();
         ImGui::SetNextWindowPos (ImVec2(670*dpi, 920*dpi), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(360*dpi, 220*dpi), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Time at N=1M (bar)", nullptr);
+        ImGui::SetNextWindowSize(ImVec2(360*dpi,220*dpi), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Time at N=1B (bar)", nullptr);
 
-        if (ImPlot::BeginPlot("##bar1m", ImVec2(-1,-1))) {
+        if (ImPlot::BeginPlot("##bar1b", ImVec2(-1,-1))) {
             ImPlot::SetupAxes("Implementation", "Time (ms)",
                               ImPlotAxisFlags_NoTickLabels, 0);
+            
             double vals[3] = {last.ms_scalar, last.ms_neon, last.ms_unrolled};
-            double pos[3]  = {0.0, 1.0, 2.0};
             const char* lbls[3] = {"Scalar","NEON","Unrolled"};
-
-            ImPlot::SetNextFillStyle(ImVec4(0.7f,0.7f,0.7f,0.9f));
-            ImPlot::PlotBars("Scalar",   &vals[0], 1, 0.5, pos[0]);
-            ImPlot::SetNextFillStyle(ImVec4(0.2f,0.85f,0.9f,0.9f));
-            ImPlot::PlotBars("NEON",     &vals[1], 1, 0.5, pos[1]);
-            ImPlot::SetNextFillStyle(ImVec4(0.8f,0.4f,1.0f,0.9f));
-            ImPlot::PlotBars("Unrolled", &vals[2], 1, 0.5, pos[2]);
-
-            for (int k = 0; k < 3; ++k)
-                ImPlot::Annotation(pos[k], vals[k], ImVec4(1,1,1,1),
-                                   ImVec2(0,-8), true, "%s", lbls[k]);
+            
+            ImPlot::PlotBarGroups(lbls, &vals[0], 3, 1, 0.67, 0);
 
             ImPlot::EndPlot();
         }
         ImGui::End();
     }
 }
-
 #if defined(NEON_GUI_SDL2)
 
 struct WindowContext { SDL_Window* window; SDL_GLContext gl_ctx; };
@@ -653,7 +645,7 @@ static bool window_init(WindowContext& ctx, float& dpi, int w, int h)
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         0, 0,
         SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_ALLOW_HIGHDPI);
-    dpi = 2.0f; // Мобильный DPI
+    dpi = 2.0f;
 #else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -814,7 +806,7 @@ int main()
     while (!window_should_close(ctx)) {
         window_new_frame(ctx);
 
-        draw_platform_panel    (dpi, app);
+        draw_platform_panel    (dpi);
         draw_tests_panel       (dpi, app);
         draw_custom_panel      (dpi, app);
         draw_bench_control_panel(dpi, app);
