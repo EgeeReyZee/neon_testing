@@ -178,10 +178,21 @@ static std::vector<TestResult> run_correctness_tests()
     return results;
 }
 
+struct BenchRun {
+    size_t N;
+    double ms_scalar;
+    double ms_neon;
+    double ms_unrolled;
+};
+
 struct BenchRow {
-    size_t  N;
-    double  ms_scalar, ms_neon, ms_unrolled;
-    double  speedup_neon, speedup_unrolled;
+    size_t N;
+    double ms_scalar_avg;
+    double ms_neon_avg;
+    double ms_unrolled_avg;
+    double speedup_neon;
+    double speedup_unrolled;
+    std::vector<BenchRun> runs;
 };
 
 template<typename Fn>
@@ -203,10 +214,24 @@ static std::vector<BenchRow> run_benchmark(int runs_per_size)
     std::mt19937 rng(42);
     std::uniform_int_distribution<i32> dist(-1000, 1000);
 
-    std::vector<size_t> sizes = {10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000, 2000000000};
+    std::vector<size_t> sizes;
+    for (int p = 1; p <= 9; ++p) {
+        size_t base = (size_t)pow(10, p);
+        sizes.push_back(base);
+        for (int mult = 2; mult <= 9; ++mult) {
+            size_t val = base * mult;
+            if (val < base * 10) sizes.push_back(val);
+        }
+    }
+    sizes.push_back(1000000000);
+    std::sort(sizes.begin(), sizes.end());
+    
     std::vector<BenchRow> rows;
     
     for (size_t N : sizes) {
+        if (N > 10000000) continue;
+        
+        std::vector<BenchRun> runs;
         double sum_scalar = 0, sum_neon = 0, sum_unrolled = 0;
         
         for (int run = 0; run < runs_per_size; ++run) {
@@ -216,18 +241,30 @@ static std::vector<BenchRow> run_benchmark(int runs_per_size)
                 buf[rng() % N] = 0;
             const i32* data = buf.data();
             
-            sum_scalar  += bench_ms([&]{ return process_array_scalar(data, N); }, 10);
-            sum_neon    += bench_ms([&]{ return process_array_neon(data, N); }, 10);
-            sum_unrolled+= bench_ms([&]{ return process_array_neon_unrolled(data, N); }, 10);
+            double ms_s = bench_ms([&]{ return process_array_scalar(data, N); }, 5);
+            double ms_n = bench_ms([&]{ return process_array_neon(data, N); }, 5);
+            double ms_u = bench_ms([&]{ return process_array_neon_unrolled(data, N); }, 5);
+            
+            BenchRun br;
+            br.N = N;
+            br.ms_scalar = ms_s;
+            br.ms_neon = ms_n;
+            br.ms_unrolled = ms_u;
+            runs.push_back(br);
+            
+            sum_scalar += ms_s;
+            sum_neon += ms_n;
+            sum_unrolled += ms_u;
         }
         
         BenchRow row;
-        row.N          = N;
-        row.ms_scalar  = sum_scalar / runs_per_size;
-        row.ms_neon    = sum_neon / runs_per_size;
-        row.ms_unrolled= sum_unrolled / runs_per_size;
-        row.speedup_neon    = row.ms_scalar / row.ms_neon;
-        row.speedup_unrolled= row.ms_scalar / row.ms_unrolled;
+        row.N = N;
+        row.ms_scalar_avg = sum_scalar / runs_per_size;
+        row.ms_neon_avg = sum_neon / runs_per_size;
+        row.ms_unrolled_avg = sum_unrolled / runs_per_size;
+        row.speedup_neon = row.ms_scalar_avg / row.ms_neon_avg;
+        row.speedup_unrolled = row.ms_scalar_avg / row.ms_unrolled_avg;
+        row.runs = std::move(runs);
         rows.push_back(row);
     }
     return rows;
@@ -246,7 +283,8 @@ struct AppState {
 
     std::vector<double> plot_N;
     std::vector<double> plot_scalar, plot_neon, plot_unrolled;
-    std::vector<double> plot_speedup_neon, plot_speedup_unrolled;
+    std::vector<double> speedup_categories;
+    std::vector<double> speedup_neon_vals, speedup_unrolled_vals;
 
     int   custom_n     = 1000;
     int   seed         = 42;
@@ -258,14 +296,15 @@ struct AppState {
     void rebuild_plot_data() {
         std::lock_guard<std::mutex> lk(bench_mtx);
         plot_N.clear(); plot_scalar.clear(); plot_neon.clear(); plot_unrolled.clear();
-        plot_speedup_neon.clear(); plot_speedup_unrolled.clear();
+        speedup_categories.clear(); speedup_neon_vals.clear(); speedup_unrolled_vals.clear();
         for (auto& r : bench_rows) {
             plot_N.push_back((double)r.N);
-            plot_scalar.push_back(r.ms_scalar);
-            plot_neon.push_back(r.ms_neon);
-            plot_unrolled.push_back(r.ms_unrolled);
-            plot_speedup_neon.push_back(r.speedup_neon);
-            plot_speedup_unrolled.push_back(r.speedup_unrolled);
+            plot_scalar.push_back(r.ms_scalar_avg);
+            plot_neon.push_back(r.ms_neon_avg);
+            plot_unrolled.push_back(r.ms_unrolled_avg);
+            speedup_categories.push_back((double)r.N);
+            speedup_neon_vals.push_back(r.speedup_neon);
+            speedup_unrolled_vals.push_back(r.speedup_unrolled);
         }
     }
 };
@@ -414,7 +453,7 @@ static void draw_custom_panel(float dpi, AppState& app)
     ImGui::InputInt("RNG seed", &app.seed);
 
     ImGui::SetNextItemWidth(160*dpi);
-    ImGui::InputInt("Value range ±", &app.range);
+    ImGui::InputInt("Value range \xC2\xB1", &app.range);
     app.range = std::max(1, app.range);
 
     ImGui::SetNextItemWidth(160*dpi);
@@ -499,7 +538,8 @@ static void draw_bench_control_panel(float dpi, AppState& app)
     if (app.bench_done) {
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
         std::lock_guard<std::mutex> lk(app.bench_mtx);
-        for (auto& r : app.bench_rows) {
+        for (size_t i = 0; i < app.bench_rows.size() && i < 5; ++i) {
+            auto& r = app.bench_rows[i];
             double best_speedup = std::max(r.speedup_neon, r.speedup_unrolled);
             ImVec4 col = (best_speedup > 1.5) ? ImVec4(0.2f,1.0f,0.4f,1.f) : ImVec4(1.0f,0.8f,0.2f,1.f);
             ImGui::TextColored(col, "  N=%-7s  best x%.2f", fmt_n(r.N).c_str(), best_speedup);
@@ -514,44 +554,48 @@ static void draw_bench_table(float dpi, AppState& app)
     if (!app.bench_done) return;
 
     ImGui::SetNextWindowPos (ImVec2(10*dpi, 570*dpi), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(650*dpi,220*dpi), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Benchmark Results", nullptr);
+    ImGui::SetNextWindowSize(ImVec2(1200*dpi,450*dpi), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Benchmark Results (All Runs)", nullptr);
 
     ImGuiTableFlags tf = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg
-                       | ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("##bench", 7, tf)) {
-        ImGui::TableSetupColumn("N",         ImGuiTableColumnFlags_WidthFixed,  70*dpi);
-        ImGui::TableSetupColumn("Scalar ms", ImGuiTableColumnFlags_WidthStretch,1.5f);
-        ImGui::TableSetupColumn("NEON ms",   ImGuiTableColumnFlags_WidthStretch,1.5f);
-        ImGui::TableSetupColumn("Unrolled ms",ImGuiTableColumnFlags_WidthStretch,1.5f);
-        ImGui::TableSetupColumn("NEON x",    ImGuiTableColumnFlags_WidthStretch,1.f);
-        ImGui::TableSetupColumn("Unroll x",  ImGuiTableColumnFlags_WidthStretch,1.f);
-        ImGui::TableSetupColumn("Best",      ImGuiTableColumnFlags_WidthFixed,  80*dpi);
+                       | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY;
+    
+    int total_runs = app.bench_rows.empty() ? 0 : (int)app.bench_rows[0].runs.size();
+    
+    if (ImGui::BeginTable("##bench", 5 + total_runs * 3, tf)) {
+        ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_WidthFixed, 80*dpi);
+        ImGui::TableSetupColumn("Avg S", ImGuiTableColumnFlags_WidthFixed, 90*dpi);
+        ImGui::TableSetupColumn("Avg N", ImGuiTableColumnFlags_WidthFixed, 90*dpi);
+        ImGui::TableSetupColumn("Avg U", ImGuiTableColumnFlags_WidthFixed, 90*dpi);
+        ImGui::TableSetupColumn("Best", ImGuiTableColumnFlags_WidthFixed, 80*dpi);
+        
+        for (int run = 0; run < total_runs; ++run) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "S%d", run+1);
+            ImGui::TableSetupColumn(buf, ImGuiTableColumnFlags_WidthFixed, 70*dpi);
+            snprintf(buf, sizeof(buf), "N%d", run+1);
+            ImGui::TableSetupColumn(buf, ImGuiTableColumnFlags_WidthFixed, 70*dpi);
+            snprintf(buf, sizeof(buf), "U%d", run+1);
+            ImGui::TableSetupColumn(buf, ImGuiTableColumnFlags_WidthFixed, 70*dpi);
+        }
         ImGui::TableHeadersRow();
 
         std::lock_guard<std::mutex> lk(app.bench_mtx);
-        for (auto& r : app.bench_rows) {
+        for (auto& row : app.bench_rows) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::Text("%s", fmt_n(r.N).c_str());
-            ImGui::TableNextColumn(); ImGui::Text("%.4f", r.ms_scalar);
-            ImGui::TableNextColumn(); ImGui::Text("%.4f", r.ms_neon);
-            ImGui::TableNextColumn(); ImGui::Text("%.4f", r.ms_unrolled);
-
-            auto speedup_color = [](double s) -> ImVec4 {
-                return (s > 2.0) ? ImVec4(0.2f,1.0f,0.4f,1.f)
-                     : (s > 1.0) ? ImVec4(1.0f,0.9f,0.2f,1.f)
-                                 : ImVec4(1.0f,0.4f,0.4f,1.f);
-            };
-
+            ImGui::TableNextColumn(); ImGui::Text("%s", fmt_n(row.N).c_str());
+            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_scalar_avg);
+            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_neon_avg);
+            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_unrolled_avg);
             ImGui::TableNextColumn();
-            ImGui::TextColored(speedup_color(r.speedup_neon), "x%.2f", r.speedup_neon);
-            ImGui::TableNextColumn();
-            ImGui::TextColored(speedup_color(r.speedup_unrolled), "x%.2f", r.speedup_unrolled);
-
-            ImGui::TableNextColumn();
-            bool neon_wins = r.speedup_neon > r.speedup_unrolled;
-            ImGui::TextColored(ImVec4(0.20f,0.85f,0.90f,1.f),
-                               "%s", neon_wins ? "NEON" : "UNROLL");
+            ImGui::TextColored(ImVec4(0.20f,0.85f,0.90f,1.f), "%s",
+                row.speedup_neon > row.speedup_unrolled ? "NEON" : "UNROLL");
+            
+            for (int run = 0; run < total_runs && run < (int)row.runs.size(); ++run) {
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_scalar);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_neon);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_unrolled);
+            }
         }
         ImGui::EndTable();
     }
@@ -566,14 +610,13 @@ static void draw_plots(float dpi, AppState& app)
     const int n = (int)app.plot_N.size();
     const double* xs = app.plot_N.data();
 
-    ImGui::SetNextWindowPos (ImVec2(10*dpi, 800*dpi), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos (ImVec2(10*dpi, 1030*dpi), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(650*dpi,340*dpi), ImGuiCond_FirstUseEver);
     ImGui::Begin("Execution Time (ms)", nullptr);
 
     if (ImPlot::BeginPlot("##time", ImVec2(-1,-1))) {
         ImPlot::SetupAxes("Array size (N)", "Time (ms)");
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-        ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest);
 
         ImPlot::PlotLine("Scalar",   xs, app.plot_scalar.data(),   n);
@@ -588,48 +631,45 @@ static void draw_plots(float dpi, AppState& app)
     }
     ImGui::End();
 
-    ImGui::SetNextWindowPos (ImVec2(670*dpi, 570*dpi), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360*dpi,340*dpi), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos (ImVec2(680*dpi, 1030*dpi), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(530*dpi,340*dpi), ImGuiCond_FirstUseEver);
     ImGui::Begin("Speedup vs Scalar", nullptr);
-
-    if (ImPlot::BeginPlot("##speedup", ImVec2(-1,-1))) {
+    
+    if (ImPlot::BeginPlot("##speedup_bar", ImVec2(-1,-1))) {
         ImPlot::SetupAxes("Array size (N)", "Speedup (x)");
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest);
-
-        {
-            std::vector<double> baseline_xs = {app.plot_N.front(), app.plot_N.back()};
-            std::vector<double> baseline_ys = {1.0, 1.0};
-            ImPlot::PlotLine("Baseline x1", baseline_xs.data(), baseline_ys.data(), 2);
+        
+        for (int i = 0; i < n; ++i) {
+            double x_pos = app.speedup_categories[i];
+            double neon_val = app.speedup_neon_vals[i];
+            double unroll_val = app.speedup_unrolled_vals[i];
+            
+            double x_center = x_pos;
+            double width = 0.15;
+            if (i > 0) {
+                double prev = app.speedup_categories[i-1];
+                width = (x_pos - prev) * 0.35;
+            }
+            
+            if (i == 0) {
+                ImPlot::PlotBars("NEON", &x_center, &neon_val, 1, width);
+                ImPlot::PlotBars("Unrolled", &x_center, &unroll_val, 1, width);
+            } else {
+                ImPlot::PlotBars("##n", &x_center, &neon_val, 1, width);
+                ImPlot::PlotBars("##u", &x_center, &unroll_val, 1, width);
+            }
         }
-
-        ImPlot::PlotLine("NEON",     xs, app.plot_speedup_neon.data(),     n);
-        ImPlot::PlotLine("Unrolled", xs, app.plot_speedup_unrolled.data(), n);
-
+        
+        std::vector<double> baseline_x = {app.speedup_categories.front(), app.speedup_categories.back()};
+        std::vector<double> baseline_y = {1.0, 1.0};
+        ImPlot::PlotLine("Baseline x1", baseline_x.data(), baseline_y.data(), 2);
+        
         ImPlot::EndPlot();
     }
     ImGui::End();
-
-    {
-        auto& last = app.bench_rows.back();
-        ImGui::SetNextWindowPos (ImVec2(670*dpi, 920*dpi), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(360*dpi,220*dpi), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Time at N=1B (bar)", nullptr);
-
-        if (ImPlot::BeginPlot("##bar1b", ImVec2(-1,-1))) {
-            ImPlot::SetupAxes("Implementation", "Time (ms)",
-                              ImPlotAxisFlags_NoTickLabels, 0);
-            
-            double vals[3] = {last.ms_scalar, last.ms_neon, last.ms_unrolled};
-            const char* lbls[3] = {"Scalar","NEON","Unrolled"};
-            
-            ImPlot::PlotBarGroups(lbls, &vals[0], 3, 1, 0.67, 0);
-
-            ImPlot::EndPlot();
-        }
-        ImGui::End();
-    }
 }
+
 #if defined(NEON_GUI_SDL2)
 
 struct WindowContext { SDL_Window* window; SDL_GLContext gl_ctx; };
@@ -788,7 +828,7 @@ int main()
     WindowContext ctx{};
     float dpi = 1.0f;
 
-    if (!window_init(ctx, dpi, 1060, 1160)) return 1;
+    if (!window_init(ctx, dpi, 1450, 1420)) return 1;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
