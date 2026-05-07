@@ -24,6 +24,7 @@ implot/             ← исходники ImPlot (https://github.com/epezent/im
 sudo apt install libglfw3-dev libgl1-mesa-dev cmake g++
 
 # Клонировать ImGui + ImPlot рядом с neon_gui.cpp
+cd external/
 git clone https://github.com/ocornut/imgui
 git clone https://github.com/epezent/implot
 
