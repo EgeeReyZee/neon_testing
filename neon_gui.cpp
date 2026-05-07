@@ -80,9 +80,12 @@ static i64 process_array_neon(const i32* __restrict__ data, size_t n)
         __builtin_prefetch(data + i + 8, 0, 1);
         i32x4 vec     = vld1q_s32(data + i);
         i32x4 abs_vec = neon_abs_barrel(vec);
-        i32x4 mp      = vcgtq_s32(vec, vdupq_n_s32(0));
-        i32x4 mn      = vcltq_s32(vec, vdupq_n_s32(0));
-        i32x4 contrib = vorrq_s32(vandq_s32(vec, mp), vandq_s32(abs_vec, mn));
+        uint32x4_t mp = vcgtq_s32(vec, vdupq_n_s32(0));
+        uint32x4_t mn = vcltq_s32(vec, vdupq_n_s32(0));
+        i32x4 contrib = vorrq_s32(
+            vandq_s32(vec,     vreinterpretq_s32_u32(mp)),
+            vandq_s32(abs_vec, vreinterpretq_s32_u32(mn))
+        );
         acc = vaddq_s32(acc, contrib);
     }
 #if defined(__aarch64__)
@@ -113,10 +116,10 @@ static i64 process_array_neon_unrolled(const i32* __restrict__ data, size_t n)
         i32x4 a0 = vsubq_s32(veorq_s32(v0, s0), s0);
         i32x4 s1 = vshrq_n_s32(v1, 31);
         i32x4 a1 = vsubq_s32(veorq_s32(v1, s1), s1);
-        i32x4 nz0 = vorrq_s32(vcgtq_s32(v0, zero), vcltq_s32(v0, zero));
-        i32x4 nz1 = vorrq_s32(vcgtq_s32(v1, zero), vcltq_s32(v1, zero));
-        acc0 = vaddq_s32(acc0, vandq_s32(a0, nz0));
-        acc1 = vaddq_s32(acc1, vandq_s32(a1, nz1));
+        uint32x4_t nz0 = vorrq_u32(vcgtq_s32(v0, zero), vcltq_s32(v0, zero));
+        uint32x4_t nz1 = vorrq_u32(vcgtq_s32(v1, zero), vcltq_s32(v1, zero));
+        acc0 = vaddq_s32(acc0, vandq_s32(a0, vreinterpretq_s32_u32(nz0)));
+        acc1 = vaddq_s32(acc1, vandq_s32(a1, vreinterpretq_s32_u32(nz1)));
     }
     i32x4 acc = vaddq_s32(acc0, acc1);
 #if defined(__aarch64__)
