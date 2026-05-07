@@ -1,3 +1,0 @@
-C:/Users/619/Desktop/СибГУТИ/neon_testing/build/CMakeFiles/neon_gui.dir
-C:/Users/619/Desktop/СибГУТИ/neon_testing/build/CMakeFiles/edit_cache.dir
-C:/Users/619/Desktop/СибГУТИ/neon_testing/build/CMakeFiles/rebuild_cache.dir
