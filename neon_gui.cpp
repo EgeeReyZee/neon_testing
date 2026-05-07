@@ -229,7 +229,7 @@ static std::vector<BenchRow> run_benchmark(int runs_per_size)
     std::vector<BenchRow> rows;
     
     for (size_t N : sizes) {
-        if (N > 10000000) continue;
+        if (N > 100000000) continue;
         
         std::vector<BenchRun> runs;
         double sum_scalar = 0, sum_neon = 0, sum_unrolled = 0;
@@ -299,9 +299,9 @@ struct AppState {
         speedup_categories.clear(); speedup_neon_vals.clear(); speedup_unrolled_vals.clear();
         for (auto& r : bench_rows) {
             plot_N.push_back((double)r.N);
-            plot_scalar.push_back(r.ms_scalar_avg);
-            plot_neon.push_back(r.ms_neon_avg);
-            plot_unrolled.push_back(r.ms_unrolled_avg);
+            plot_scalar.push_back(r.ms_scalar_avg/1000.0);
+            plot_neon.push_back(  r.ms_neon_avg/1000.0);
+            plot_unrolled.push_back(r.ms_unrolled_avg/1000.0);
             speedup_categories.push_back((double)r.N);
             speedup_neon_vals.push_back(r.speedup_neon);
             speedup_unrolled_vals.push_back(r.speedup_unrolled);
@@ -584,17 +584,17 @@ static void draw_bench_table(float dpi, AppState& app)
         for (auto& row : app.bench_rows) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::Text("%s", fmt_n(row.N).c_str());
-            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_scalar_avg);
-            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_neon_avg);
-            ImGui::TableNextColumn(); ImGui::Text("%.3f", row.ms_unrolled_avg);
+            ImGui::Text("%.6f", row.ms_scalar_avg/1000.0);
+            ImGui::Text("%.6f", row.ms_neon_avg/1000.0);
+            ImGui::Text("%.6f", row.ms_unrolled_avg/1000.0);
             ImGui::TableNextColumn();
             ImGui::TextColored(ImVec4(0.20f,0.85f,0.90f,1.f), "%s",
                 row.speedup_neon > row.speedup_unrolled ? "NEON" : "UNROLL");
             
             for (int run = 0; run < total_runs && run < (int)row.runs.size(); ++run) {
-                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_scalar);
-                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_neon);
-                ImGui::TableNextColumn(); ImGui::Text("%.2f", row.runs[run].ms_unrolled);
+                ImGui::Text("%.6f", row.runs[run].ms_scalar/1000.0);
+                ImGui::Text("%.6f", row.runs[run].ms_neon/1000.0);
+                ImGui::Text("%.6f", row.runs[run].ms_unrolled/1000.0);
             }
         }
         ImGui::EndTable();
@@ -615,7 +615,7 @@ static void draw_plots(float dpi, AppState& app)
     ImGui::Begin("Execution Time (ms)", nullptr);
 
     if (ImPlot::BeginPlot("##time", ImVec2(-1,-1))) {
-        ImPlot::SetupAxes("Array size (N)", "Time (ms)");
+        ImPlot::SetupAxes("Array size (N)", "Time (s)");
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest);
 
